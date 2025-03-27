@@ -1,0 +1,152 @@
+var dataset = ee.FeatureCollection('projects/ee-aishaansu80/assets/GambiaEA_2013-2023');
+
+// Extract unique values for dropdowns
+var lgaList = dataset.distinct(['lganame']).aggregate_array('lganame').sort();
+var districtList = dataset.distinct(['distname']).aggregate_array('distname').sort();
+var wardList = dataset.distinct(['wardname']).aggregate_array('wardname').sort();
+var feacodeList = dataset.distinct(['feacode']).aggregate_array('feacode').sort();
+
+// Create dropdown widgets
+var lgaSelect = ui.Select({items: lgaList.getInfo(), placeholder: 'Select LGA'});
+var districtSelect = ui.Select({items: districtList.getInfo(), placeholder: 'Select District'});
+var wardSelect = ui.Select({items: wardList.getInfo(), placeholder: 'Select Ward'});
+var feacodeSelect = ui.Select({items: feacodeList.getInfo(), placeholder: 'Select Feacode'});
+
+// Counter Labels for Population, Households & Density
+var counterLabel = ui.Label({
+  value: 'Total Counts: Select an option to view',
+  style: {fontWeight: 'bold', fontSize: '14px', color: 'black'}
+});
+
+// Panel for widgets
+var controlPanel = ui.Panel({
+  widgets: [
+    ui.Label('GAMBIA POPULATION & HOUSING CENSUS DATA 2013 AND 2023', {fontWeight: 'bold', color: 'red', fontSize: '15px'}),
+    ui.Label('This dataset contains household and population data from the 2013 and 2023 census of The Gambia.', {fontWeight: 'italic', fontSize: '11px', color: 'blue'}),
+    ui.Label('PRODUCED BY SILKYSINGZ @ HFT STUTTGART, GBoS, THE GAMBIA, GIS/CARTOGRAPHY UNIT', {fontWeight: 'bold', fontSize: '10px', color: 'green'}),
+    lgaSelect, districtSelect, wardSelect, feacodeSelect, counterLabel
+  ],
+  style: {width: '500px', position: 'top-left'}
+});
+
+// Function to create the legend
+var createLegend = function() {
+  var legend = ui.Panel({style: {position: 'top-left', padding: '8px', margin: '20px 0 0 20px'}});
+  
+  var title = ui.Label('Legend', {fontWeight: 'bold', fontSize: '14px'});
+  legend.add(title);
+  
+  var colors = ['blue', 'red', 'green', 'orange'];
+  var labels = ['2023 Census Household Sum', '2023 Census Population Sum', '2013 Census Household Sum', '2013 Census Population Sum'];
+  
+  for (var i = 0; i < colors.length; i++) {
+    var colorBox = ui.Label({style: {backgroundColor: colors[i], padding: '8px', margin: '2px'}});
+    var label = ui.Label(labels[i]);
+    var row = ui.Panel([colorBox, label], ui.Panel.Layout.Flow('horizontal'));
+    legend.add(row);
+  }
+  
+  return legend;
+};
+
+// Chart Panel
+var chartPanel = ui.Panel({style: {position: 'bottom-left'}});
+
+// Map
+var map = ui.Map();
+
+// Function to update chart, map, and counters based on selection
+function updateChartAndMap() {
+  var filtered = dataset;
+  
+  if (feacodeSelect.getValue()) {
+    filtered = filtered.filter(ee.Filter.eq('feacode', feacodeSelect.getValue()));
+  } else if (wardSelect.getValue()) {
+    filtered = filtered.filter(ee.Filter.eq('wardname', wardSelect.getValue()));
+  } else if (districtSelect.getValue()) {
+    filtered = filtered.filter(ee.Filter.eq('distname', districtSelect.getValue()));
+  } else if (lgaSelect.getValue()) {
+    filtered = filtered.filter(ee.Filter.eq('lganame', lgaSelect.getValue()));
+  }
+  
+  var count = filtered.size();
+  if (count.getInfo() === 0) {
+    chartPanel.clear();
+    chartPanel.add(ui.Label('No data available for the selected filters.'));
+    counterLabel.setValue('Total Counts: No data available.');
+    return;
+  }
+
+  // Aggregate total values
+  var totalHhs2013 = filtered.aggregate_sum('sum_HHS_1').getInfo();
+  var totalPop2013 = filtered.aggregate_sum('sum_POP_1').getInfo();
+  var totalHhs2023 = filtered.aggregate_sum('sum_hhs').getInfo();
+  var totalPop2023 = filtered.aggregate_sum('sum_pop').getInfo();
+  
+  // Calculate rate of change
+  var rateHhs = ((totalHhs2023 - totalHhs2013) / totalHhs2013) * 100;
+  var ratePop = ((totalPop2023 - totalPop2013) / totalPop2013) * 100;
+
+  // Get the geometry and calculate area
+  var region = filtered.geometry();
+  var area = region.area().divide(1e6).getInfo(); // Convert to square km
+
+  // Calculate densities
+  var density2013 = totalPop2013 / area;
+  var density2023 = totalPop2023 / area;
+
+  // Calculate average household size
+  var avgHhSize2013 = totalPop2013 / totalHhs2013;
+  var avgHhSize2023 = totalPop2023 / totalHhs2023;
+
+  // Update Counter Label
+  counterLabel.setValue(
+    '------------------------------TOTAL HOUSEHOLD COUNTS (2013): ' + totalHhs2013 + '\n' +
+    '------------------------------TOTAL POPULATION COUNTS (2013): ' + totalPop2013 + '\n' +
+    '------------------------------AVERAGE HOUSEHOLD SIZE (2013): ' + avgHhSize2013.toFixed(2) + '\n' +
+    '------------------------------TOTAL HOUSEHOLD COUNTS (2023): ' + totalHhs2023 + '\n' +
+    '------------------------------TOTAL POPULATION COUNTS (2023): ' + totalPop2023 + '\n' +
+    '------------------------------AVERAGE HOUSEHOLD SIZE (2023): ' + avgHhSize2023.toFixed(2) + '\n' +
+    '------------------------------HOUSEHOLD GROWTH RATE (2013 TO 2023): ' + rateHhs.toFixed(2) + '%\n' +
+    '--------------------------POPULATION GROWTH RATE (2013 TO 2023): ' + ratePop.toFixed(2) + '%\n' +
+    '--------------------------\n' +
+    'TOTAL AREA OF LAND (BUILT-UP): ' + area.toFixed(2) + ' km²\n' +
+    '------------------------------POPULATION DENSITY (2013): ' + density2013.toFixed(2) + ' people/km²\n' +
+    '------------------------------POPULATION DENSITY (2023): ' + density2023.toFixed(2) + ' people/km²'
+  );
+
+  // Create the chart
+  var chart = ui.Chart.feature.byFeature(filtered, 'feacode', ['sum_hhs', 'sum_pop', 'sum_HHS_1', 'sum_POP_1'])
+    .setChartType('ColumnChart')
+    .setOptions({
+      title: 'Population and Household Counts (2013 vs 2023)',
+      hAxis: {title: 'Enumeration Area (EA) Code'},
+      vAxis: {title: 'Population Count'},
+      series: {
+        0: {color: 'blue'},  
+        1: {color: 'red'},   
+        2: {color: 'green'}, 
+        3: {color: 'orange'} 
+      },
+      legend: {position: 'top', maxLines: 1}
+    });
+  
+  chartPanel.clear();
+  chartPanel.add(chart);
+  
+  if (region) {
+    map.centerObject(region, 15);
+    map.layers().set(0, ui.Map.Layer(filtered, {color: 'red'}, 'Selected Area'));
+  }
+}
+
+// Bind update function to selection changes
+lgaSelect.onChange(updateChartAndMap);
+districtSelect.onChange(updateChartAndMap);
+wardSelect.onChange(updateChartAndMap);
+feacodeSelect.onChange(updateChartAndMap);
+
+// Add components to UI
+ui.root.clear();
+ui.root.add(ui.Panel([controlPanel, chartPanel, createLegend()], ui.Panel.Layout.Flow('vertical')));
+ui.root.add(map);
